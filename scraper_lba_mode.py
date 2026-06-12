@@ -1,11 +1,11 @@
 """
 Scraper LBA (La Bonne Alternance) - Mode / Ile-de-France
 =========================================================
-API  : https://api.apprentissage.beta.gouv.fr/api/job/v1/search  (nouvelle API 2025+)
-Sources : offres_emploi_lba + offres_emploi_partenaires + recruteurs_lba
-Zone    : Paris + 30 km
-Filtre  : offres des 14 derniers jours
-Output  : lba_mode_YYYY-MM-DD.xlsx  +  lba_mode_YYYY-MM-DD.csv
+API    : https://api.apprentissage.beta.gouv.fr/api/job/v1/search
+Reponse: { jobs: [...], recruiters: [...], warnings: [...] }
+Zone   : Paris + 30 km
+Filtre : offres des 14 derniers jours
+Output : lba_mode_YYYY-MM-DD.xlsx  +  lba_mode_YYYY-MM-DD.csv
 
 Secret requis (GitHub Secrets) :
   LBA_API_TOKEN -> jeton cree sur https://api.apprentissage.beta.gouv.fr/fr/compte/profil
@@ -17,6 +17,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -25,9 +26,9 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # CONFIG
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 LBA_API_TOKEN = os.getenv("LBA_API_TOKEN", "")
 LBA_JOBS_URL  = "https://api.apprentissage.beta.gouv.fr/api/job/v1/search"
@@ -44,7 +45,7 @@ ROMES_MODE = [
     "H2401",  # Assemblage-montage cuirs / peaux
     "H2402",  # Assemblage-montage vetements / textiles
     "H2411",  # Montage prototype cuir / matieres souples
-    "H2412",  # Patronnage-gradation
+    "H2412",  # Patronnage-graduation
     "D1214",  # Vente habillement et accessoires
 ]
 
@@ -57,54 +58,54 @@ OUTPUT_DIR = Path(__file__).parent
 TODAY      = date.today().isoformat()
 CUTOFF     = datetime.now(tz=timezone.utc) - timedelta(days=DAYS_BACK)
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # FORMAT EXCEL
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
+# (label, largeur_col, cle_dict)
 COLUMNS = [
-    ("Statut",           14, "statut"),
-    ("Titre du poste",   38, "titre"),
-    ("Entreprise",       22, "entreprise"),
-    ("Ville",            20, "ville"),
-    ("Region",           18, "region"),
-    ("Departement",      18, "departement"),
-    ("Categorie",        16, "categorie"),
-    ("Contrat",          14, "contrat"),
-    ("Type emploi",      14, "type_emploi"),
-    ("Experience",       16, "experience"),
-    ("Date debut",       14, "date_debut"),
-    ("Date publication", 16, "date_publication"),
-    ("Description",      70, "description"),
-    ("Profil recherche", 60, "profil_recherche"),
-    ("Contact nom",      22, "contact_nom"),
-    ("Contact tel",      16, "contact_tel"),
-    ("Contact email",    30, "contact_email"),
-    ("Site internet",    35, "site_internet"),
-    ("Lien candidature", 45, "lien_candidature"),
-    ("Source",           20, "source"),
-    ("Lien offre",       50, "lien"),
-    ("Notes",            30, "notes"),
-    ("ID",               18, "id"),
-    ("Date scraping",    14, "date_scraping"),
-    ("Code ROME",        12, "rome_debug"),
+    ("Statut",             14, "statut"),
+    ("Titre du poste",     38, "titre"),
+    ("Entreprise",         22, "entreprise"),
+    ("Ville",              18, "ville"),
+    ("Adresse",            35, "adresse"),
+    ("Categorie",          16, "categorie"),
+    ("Contrat",            14, "contrat"),
+    ("Niveau diplome",     16, "niveau_diplome"),
+    ("Date debut",         14, "date_debut"),
+    ("Date expiration",    14, "date_expiration"),
+    ("Date publication",   16, "date_publication"),
+    ("Description",        70, "description"),
+    ("Competences req.",   50, "competences_requises"),
+    ("Competences acq.",   50, "competences_acquises"),
+    ("Conditions acces",   40, "conditions_acces"),
+    ("Contact tel",        16, "contact_tel"),
+    ("Contact email",      30, "contact_email"),
+    ("Site entreprise",    35, "site_entreprise"),
+    ("Lien candidature",   45, "lien_candidature"),
+    ("Source",             20, "source"),
+    ("Notes",              30, "notes"),
+    ("ID",                 18, "id"),
+    ("Date scraping",      14, "date_scraping"),
+    ("Code ROME",          14, "rome_debug"),
 ]
 
 HEADER_FILL = PatternFill("solid", fgColor="1A1A2E")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 
 SOURCE_COLORS = {
-    "LBA - Direct":               "E8F5E9",   # vert clair
-    "LBA - France Travail":       "E3F2FD",   # bleu clair
-    "LBA - Spontanee":            "FFF9E6",   # jaune clair
+    "LBA - Direct":    "E8F5E9",   # vert clair
+    "France Travail":  "E3F2FD",   # bleu clair
+    "LBA - Spontanee": "FFF9E6",   # jaune clair
 }
 
-WRAP_COLS = {13, 14}
-LINK_COLS = {17: "site_internet", 19: "lien_candidature", 21: "lien"}
+WRAP_COLS = {12, 13, 14, 15}
+LINK_COLS = {18: "site_entreprise", 19: "lien_candidature"}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # API
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _headers() -> dict:
     h = {"Accept": "application/json"}
@@ -132,7 +133,7 @@ def fetch_jobs(rome: str, debug: bool = False) -> dict:
                     print(f"    '{k}': {len(v)} items")
                     if v:
                         print(f"    Premier item de '{k}':")
-                        print(json.dumps(v[0], indent=6, ensure_ascii=False)[:1500])
+                        print(json.dumps(v[0], indent=6, ensure_ascii=False)[:2000])
                 else:
                     print(f"    '{k}': {type(v).__name__}")
             print()
@@ -144,16 +145,15 @@ def fetch_jobs(rome: str, debug: bool = False) -> dict:
         if status == 401:
             print("  -> Token invalide ou absent.")
             print("  -> Creer un compte sur https://api.apprentissage.beta.gouv.fr")
-            print("  -> Puis mettre a jour le secret GitHub LBA_API_TOKEN")
         return {}
     except Exception as e:
         print(f"\n  Erreur reseau: {e}")
         return {}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # PARSING
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def _parse_date(raw) -> datetime | None:
     if not raw:
@@ -182,48 +182,65 @@ def _s(val) -> str:
     if val is None:
         return ""
     if isinstance(val, list):
-        return ", ".join(str(v) for v in val if v)
+        return " | ".join(str(v) for v in val if v)
     return str(val).strip()
 
 
-def _parse_address(location: dict) -> tuple[str, str, str]:
-    """Extrait (ville, region, departement) depuis location."""
-    address = location.get("address") or {}
-    if isinstance(address, dict):
-        ville       = _s(address.get("city")       or address.get("label") or "")
-        region      = _s(address.get("region")      or "Ile-de-France")
-        departement = _s(address.get("departement") or address.get("department") or "")
-    else:
-        ville, region, departement = _s(address), "Ile-de-France", ""
-    return ville, region, departement
+def _extract_city(address_str: str) -> str:
+    """Extrait la ville depuis une adresse string LBA."""
+    if not address_str:
+        return ""
+    # Format "75001 Paris" ou "Paris 75001"
+    m = re.search(r'\b\d{5}\s+([A-Za-z\xc0-\xff\s\-]+)', address_str)
+    if m:
+        return m.group(1).strip().title()
+    # Derniere partie apres virgule contenant des lettres
+    parts = [p.strip() for p in address_str.split(',')]
+    for p in reversed(parts):
+        if re.search(r'[A-Za-z\xc0-\xff]', p) and not re.match(r'^\d{5}$', p.strip()):
+            return p.strip().title()
+    return address_str.strip()
 
 
-def parse_job_offer(raw: dict, source_override: str | None = None) -> dict | None:
+def _source_label(partner_label: str) -> str:
+    """Convertit partner_label en libelle source lisible."""
+    pl = (partner_label or "").lower()
+    if pl == "offres_emploi_lba" or not pl:
+        return "LBA - Direct"
+    if "france travail" in pl or "pole emploi" in pl:
+        return "France Travail"
+    if pl == "recruteurs_lba":
+        return "LBA - Spontanee"
+    return f"Partenaire - {partner_label}"
+
+
+def parse_job(raw: dict) -> dict | None:
     """
-    Normalise une offre d'emploi depuis la nouvelle API.
+    Parse un item de la liste 'jobs' (vraies offres d'emploi).
 
-    Nouvelle structure attendue :
-      raw.identifier  -> id, partner_label, partner_job_id
-      raw.contract    -> type (list), start, duration, remote
-      raw.offer       -> title, description, rome_codes (list), target_diploma
-      raw.workplace   -> name, brand, legal_name, siret, website
-      raw.location    -> address (dict: city, region, departement), geopoint
-      raw.publication -> creation (ISO date), expiration
-      raw.apply       -> url, phone, recipient_id
+    Structure API reelle (swagger.json confirme) :
+      identifier   : id, partner_job_id, partner_label
+      workplace    : name, brand, legal_name, website, location.address (string)
+      offer        : title, description, desired_skills[], to_be_acquired_skills[],
+                     access_conditions[], rome_codes[], publication.{creation,expiration},
+                     target_diploma.{european,label}
+      contract     : type, start, duration, remote
+      apply        : url, phone
+      is_delegated : bool
     """
     identifier  = raw.get("identifier",  {}) or {}
-    contract    = raw.get("contract",    {}) or {}
-    offer       = raw.get("offer",       {}) or {}
     workplace   = raw.get("workplace",   {}) or {}
-    location    = raw.get("location",    {}) or {}
-    publication = raw.get("publication", {}) or {}
+    offer       = raw.get("offer",       {}) or {}
+    contract    = raw.get("contract",    {}) or {}
     apply_info  = raw.get("apply",       {}) or {}
+    location    = workplace.get("location", {}) or {}
+    publication = offer.get("publication", {}) or {}
 
     # Date de publication
-    date_raw = publication.get("creation")
-    if not is_recent(date_raw):
+    date_creation = publication.get("creation")
+    if not is_recent(date_creation):
         return None
-    date_pub = _s(date_raw)[:10] if date_raw else ""
+    date_pub = _s(date_creation)[:10] if date_creation else ""
 
     # Titre (obligatoire)
     titre = _s(offer.get("title"))
@@ -231,99 +248,103 @@ def parse_job_offer(raw: dict, source_override: str | None = None) -> dict | Non
         return None
 
     # Entreprise
-    entreprise = (_s(workplace.get("brand"))
-               or _s(workplace.get("name"))
-               or _s(workplace.get("legal_name")))
+    entreprise = (
+        _s(workplace.get("brand"))
+        or _s(workplace.get("name"))
+        or _s(workplace.get("legal_name"))
+    )
 
-    # Localisation
-    ville, region, departement = _parse_address(location)
+    # Adresse / Ville
+    adresse = _s(location.get("address", ""))
+    ville   = _extract_city(adresse)
 
     # Contrat
-    contract_types = contract.get("type", [])
-    if isinstance(contract_types, list):
-        contrat = ", ".join(contract_types) if contract_types else "Alternance"
-    else:
-        contrat = _s(contract_types) or "Alternance"
+    ct = contract.get("type", "Alternance")
+    contrat = _s(ct) if ct else "Alternance"
 
-    # Date debut
+    # Dates
     date_debut = _s(contract.get("start", ""))[:10] if contract.get("start") else ""
+    date_exp   = _s(publication.get("expiration", ""))[:10] if publication.get("expiration") else ""
 
-    # Description
-    description   = _s(offer.get("description", ""))[:3000]
-    profil        = _s(offer.get("access_conditions", ""))[:1000]
+    # Diplome cible
+    target_dip = offer.get("target_diploma") or {}
+    if isinstance(target_dip, dict):
+        niveau_diplome = _s(target_dip.get("label") or target_dip.get("european") or "")
+    else:
+        niveau_diplome = _s(target_dip)
+
+    # Description + competences
+    description          = _s(offer.get("description", ""))[:4000]
+    competences_requises = _s(offer.get("desired_skills", []))[:2000]
+    competences_acquises = _s(offer.get("to_be_acquired_skills", []))[:2000]
+    conditions_acces     = _s(offer.get("access_conditions", []))[:500]
 
     # Contact
-    contact_tel = _s(apply_info.get("phone", ""))
-    apply_url   = _s(apply_info.get("url", ""))
-    site_web    = _s(workplace.get("website", ""))
+    contact_tel     = _s(apply_info.get("phone", ""))
+    lien_cand       = _s(apply_info.get("url", ""))
+    site_entreprise = _s(workplace.get("website", ""))
 
     # Source
-    if source_override:
-        source = source_override
-    else:
-        partner_label = _s(identifier.get("partner_label", ""))
-        lbl_lower = partner_label.lower()
-        if not partner_label or "bonne alternance" in lbl_lower or lbl_lower == "lba":
-            source = "LBA - Direct"
-        elif "france travail" in lbl_lower or "pole emploi" in lbl_lower:
-            source = "LBA - France Travail"
-        else:
-            source = f"LBA - {partner_label}"
+    partner_label = _s(identifier.get("partner_label", ""))
+    source = _source_label(partner_label)
 
-    # ROME codes
-    rome_codes = offer.get("rome_codes", [])
-    rome_debug = _s(rome_codes)
+    # ROME
+    rome_debug = _s(offer.get("rome_codes", []))
 
     # ID unique
-    uid_src = (_s(identifier.get("id"))
-            or _s(identifier.get("partner_job_id"))
-            or apply_url
-            or f"{titre}|{entreprise}")
+    uid_src = (
+        _s(identifier.get("id"))
+        or _s(identifier.get("partner_job_id"))
+        or lien_cand
+        or f"{titre}|{entreprise}"
+    )
     offer_id = hashlib.sha256(uid_src.encode()).hexdigest()[:16]
 
     return {
-        "statut":           "Nouveau",
-        "titre":            titre,
-        "entreprise":       entreprise,
-        "ville":            ville,
-        "region":           region,
-        "departement":      departement,
-        "categorie":        "",
-        "contrat":          contrat,
-        "type_emploi":      "",
-        "experience":       "",
-        "date_debut":       date_debut,
-        "date_publication": date_pub,
-        "description":      description,
-        "profil_recherche": profil,
-        "contact_nom":      "",
-        "contact_tel":      contact_tel,
-        "contact_email":    "",
-        "site_internet":    site_web,
-        "lien_candidature": apply_url,
-        "source":           source,
-        "lien":             apply_url,
-        "notes":            "",
-        "id":               offer_id,
-        "date_scraping":    TODAY,
-        "rome_debug":       rome_debug,
+        "statut":               "Nouveau",
+        "titre":                titre,
+        "entreprise":           entreprise,
+        "ville":                ville,
+        "adresse":              adresse,
+        "categorie":            "",
+        "contrat":              contrat,
+        "niveau_diplome":       niveau_diplome,
+        "date_debut":           date_debut,
+        "date_expiration":      date_exp,
+        "date_publication":     date_pub,
+        "description":          description,
+        "competences_requises": competences_requises,
+        "competences_acquises": competences_acquises,
+        "conditions_acces":     conditions_acces,
+        "contact_tel":          contact_tel,
+        "contact_email":        "",
+        "site_entreprise":      site_entreprise,
+        "lien_candidature":     lien_cand,
+        "source":               source,
+        "notes":                "",
+        "id":                   offer_id,
+        "date_scraping":        TODAY,
+        "rome_debug":           rome_debug,
     }
 
 
 def parse_recruiter(raw: dict) -> dict | None:
-    """Normalise un recruteur potentiel (candidature spontanee)."""
+    """Parse un item de la liste 'recruiters' (candidatures spontanees)."""
     identifier = raw.get("identifier", {}) or {}
     workplace  = raw.get("workplace",  {}) or {}
-    location   = raw.get("location",   {}) or {}
     apply_info = raw.get("apply",      {}) or {}
+    location   = workplace.get("location", {}) or {}
 
-    entreprise = (_s(workplace.get("brand"))
-               or _s(workplace.get("name"))
-               or _s(workplace.get("legal_name")))
+    entreprise = (
+        _s(workplace.get("brand"))
+        or _s(workplace.get("name"))
+        or _s(workplace.get("legal_name"))
+    )
     if not entreprise:
         return None
 
-    ville, region, departement = _parse_address(location)
+    adresse     = _s(location.get("address", ""))
+    ville       = _extract_city(adresse)
     apply_url   = _s(apply_info.get("url", ""))
     contact_tel = _s(apply_info.get("phone", ""))
     site_web    = _s(workplace.get("website", ""))
@@ -332,42 +353,41 @@ def parse_recruiter(raw: dict) -> dict | None:
     offer_id = hashlib.sha256(uid_src.encode()).hexdigest()[:16]
 
     return {
-        "statut":           "Candidature spontanee",
-        "titre":            f"Candidature spontanee - {entreprise}",
-        "entreprise":       entreprise,
-        "ville":            ville,
-        "region":           region,
-        "departement":      departement,
-        "categorie":        "",
-        "contrat":          "Alternance",
-        "type_emploi":      "",
-        "experience":       "",
-        "date_debut":       "",
-        "date_publication": TODAY,
-        "description":      "Entreprise susceptible d'embaucher en alternance (algorithme LBA)",
-        "profil_recherche": "",
-        "contact_nom":      "",
-        "contact_tel":      contact_tel,
-        "contact_email":    "",
-        "site_internet":    site_web,
-        "lien_candidature": apply_url,
-        "source":           "LBA - Spontanee",
-        "lien":             apply_url,
-        "notes":            "",
-        "id":               offer_id,
-        "date_scraping":    TODAY,
-        "rome_debug":       "",
+        "statut":               "Candidature spontanee",
+        "titre":                f"Candidature spontanee - {entreprise}",
+        "entreprise":           entreprise,
+        "ville":                ville,
+        "adresse":              adresse,
+        "categorie":            "",
+        "contrat":              "Alternance",
+        "niveau_diplome":       "",
+        "date_debut":           "",
+        "date_expiration":      "",
+        "date_publication":     TODAY,
+        "description":          "Entreprise susceptible d'embaucher en alternance (algorithme LBA)",
+        "competences_requises": "",
+        "competences_acquises": "",
+        "conditions_acces":     "",
+        "contact_tel":          contact_tel,
+        "contact_email":        "",
+        "site_entreprise":      site_web,
+        "lien_candidature":     apply_url,
+        "source":               "LBA - Spontanee",
+        "notes":                "",
+        "id":                   offer_id,
+        "date_scraping":        TODAY,
+        "rome_debug":           "",
     }
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # SCRAPE
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def scrape_lba(debug: bool = False) -> list[dict]:
     """
-    Appelle l'API une fois par code ROME pour maximiser les resultats.
-    Nouvelle API : pas de pagination, max ~150 offres par source par appel.
+    Appelle l'API une fois par code ROME.
+    Reponse reelle : { jobs: [...], recruiters: [...], warnings: [...] }
     """
     all_offers: list[dict] = []
     total_raw = 0
@@ -380,7 +400,6 @@ def scrape_lba(debug: bool = False) -> list[dict]:
     for rome in ROMES_MODE:
         print(f"  -> {rome}...", end=" ", flush=True)
 
-        # Debug seulement sur le premier appel pour ne pas inonder les logs
         do_debug = debug and first_call
         data = fetch_jobs(rome, debug=do_debug)
         first_call = False
@@ -389,42 +408,23 @@ def scrape_lba(debug: bool = False) -> list[dict]:
             print("vide ou erreur")
             continue
 
-        # Nouvelle API : offres_emploi_lba, offres_emploi_partenaires, recruteurs_lba
-        # Fallback vers les cles plus generiques si la structure change
-        lba_direct   = (data.get("offres_emploi_lba",         None) or
-                        data.get("lbaJobs",                   None) or [])
-        ft_offers    = (data.get("offres_emploi_partenaires", None) or
-                        data.get("peJobs",                    None) or [])
-        recruiters   = (data.get("recruteurs_lba",            None) or
-                        data.get("recruiters",                None) or [])
+        # Vraies cles de reponse confirmees par swagger.json
+        jobs       = data.get("jobs",       []) or []
+        recruiters = data.get("recruiters", []) or []
 
-        # Si la cle est un dict avec sous-cle "results" (ancien format)
-        if isinstance(lba_direct, dict):
-            lba_direct = lba_direct.get("results", [])
-        if isinstance(ft_offers, dict):
-            ft_offers = ft_offers.get("results", [])
-
-        page_raw = len(lba_direct) + len(ft_offers) + len(recruiters)
+        page_raw = len(jobs) + len(recruiters)
         total_raw += page_raw
         kept = filtered = 0
 
-        for raw in (lba_direct or []):
-            o = parse_job_offer(raw, source_override="LBA - Direct")
+        for raw in jobs:
+            o = parse_job(raw)
             if o:
                 all_offers.append(o)
                 kept += 1
             else:
                 filtered += 1
 
-        for raw in (ft_offers or []):
-            o = parse_job_offer(raw, source_override="LBA - France Travail")
-            if o:
-                all_offers.append(o)
-                kept += 1
-            else:
-                filtered += 1
-
-        for raw in (recruiters or []):
+        for raw in recruiters:
             o = parse_recruiter(raw)
             if o:
                 all_offers.append(o)
@@ -438,9 +438,9 @@ def scrape_lba(debug: bool = False) -> list[dict]:
     return all_offers
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # DEDUPLICATION
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def deduplicate(offers: list[dict]) -> list[dict]:
     seen: set[str] = set()
@@ -456,9 +456,9 @@ def deduplicate(offers: list[dict]) -> list[dict]:
     return unique
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # EXPORT EXCEL
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def export_excel(offers: list[dict], filepath: Path) -> None:
     wb = openpyxl.Workbook()
@@ -500,9 +500,9 @@ def export_excel(offers: list[dict], filepath: Path) -> None:
     print(f"Excel : {filepath.name}  ({filepath.stat().st_size // 1024} ko)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # EXPORT CSV
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def export_csv(offers: list[dict], filepath: Path) -> None:
     if not offers:
@@ -519,9 +519,9 @@ def export_csv(offers: list[dict], filepath: Path) -> None:
     print(f"CSV : {filepath.name}  ({filepath.stat().st_size // 1024} ko)")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 # MAIN
-# ──────────────────────────────────────────────────────────────────────────────
+# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
 
 def main() -> None:
     debug = os.getenv("LBA_DEBUG", "").lower() in ("1", "true", "yes")
@@ -541,21 +541,25 @@ def main() -> None:
 
     if not offers:
         print("\nAucune offre recuperee.")
-        print("  -> Verifier que LBB_API_TOKEN est valide (nouveau jeton api.apprentissage.beta.gouv.fr)")
+        print("  -> Verifier que LBA_API_TOKEN est valide")
         print("  -> Relancer avec LBA_DEBUG=true pour voir la structure de reponse")
         return
 
-    ft_count    = sum(1 for o in offers if "France Travail" in o.get("source", ""))
-    lba_count   = sum(1 for o in offers if "Direct" in o.get("source", ""))
-    spont_count = sum(1 for o in offers if "Spontanee" in o.get("source", ""))
+    job_count   = sum(1 for o in offers if o.get("source") in ("LBA - Direct", "France Travail"))
+    lba_count   = sum(1 for o in offers if o.get("source") == "LBA - Direct")
+    ft_count    = sum(1 for o in offers if o.get("source") == "France Travail")
+    spont_count = sum(1 for o in offers if o.get("source") == "LBA - Spontanee")
     with_phone  = sum(1 for o in offers if o.get("contact_tel"))
+    with_desc   = sum(1 for o in offers if o.get("description") and len(o["description"]) > 20)
 
     print(f"\nResultats - {TODAY}")
-    print(f"   Total          : {len(offers)}")
-    print(f"   LBA Direct     : {lba_count}")
-    print(f"   France Travail : {ft_count}")
-    print(f"   Spontanees     : {spont_count}")
-    print(f"   Avec telephone : {with_phone}")
+    print(f"   Total             : {len(offers)}")
+    print(f"   Vraies offres     : {job_count}")
+    print(f"     LBA Direct      : {lba_count}")
+    print(f"     France Travail  : {ft_count}")
+    print(f"   Spontanees        : {spont_count}")
+    print(f"   Avec telephone    : {with_phone}")
+    print(f"   Avec description  : {with_desc}")
 
     xlsx_path = OUTPUT_DIR / f"lba_mode_{TODAY}.xlsx"
     csv_path  = OUTPUT_DIR / f"lba_mode_{TODAY}.csv"
