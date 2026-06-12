@@ -1,10 +1,7 @@
 name: Test LBA Mode Scraper
 
 on:
-  # Lancement manuel depuis l'onglet Actions â "Run workflow"
   workflow_dispatch:
-
-  # Automatique une fois par jour Ã  8h Paris (UTC+2 Ã©tÃ©, UTC+1 hiver)
   schedule:
     - cron: '0 6 * * *'
 
@@ -26,13 +23,11 @@ jobs:
 
       - name: Run LBA scraper
         env:
-          # Ajouter dans : Settings â Secrets and variables â Actions â New secret
           LBA_API_TOKEN: ${{ secrets.LBA_API_TOKEN }}
-          # Mettre LBA_DEBUG=true pour voir la structure JSON brute de l'API (debug initial)
           LBA_DEBUG: "true"
         run: python scraper_lba_mode.py
 
-      - name: Upload rÃ©sultats
+      - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
