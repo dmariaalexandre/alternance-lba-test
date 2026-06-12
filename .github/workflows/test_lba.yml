@@ -1,0 +1,44 @@
+name: Test LBA Mode Scraper
+
+on:
+  # Lancement manuel depuis l'onglet Actions â "Run workflow"
+  workflow_dispatch:
+
+  # Automatique une fois par jour Ã  8h Paris (UTC+2 Ã©tÃ©, UTC+1 hiver)
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  scrape-lba:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run LBA scraper
+        env:
+          # Ajouter dans : Settings â Secrets and variables â Actions â New secret
+          LBA_API_TOKEN: ${{ secrets.LBA_API_TOKEN }}
+          # Mettre LBA_DEBUG=true pour voir la structure JSON brute de l'API (debug initial)
+          LBA_DEBUG: "true"
+        run: python scraper_lba_mode.py
+
+      - name: Upload rÃ©sultats
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lba-mode-${{ github.run_id }}
+          path: |
+            lba_mode_*.xlsx
+            lba_mode_*.csv
+          retention-days: 30
+          if-no-files-found: warn
