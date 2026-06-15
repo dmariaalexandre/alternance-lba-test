@@ -3,8 +3,8 @@ Scraper LBA (La Bonne Alternance) - Mode / Ile-de-France
 =========================================================
 API    : https://api.apprentissage.beta.gouv.fr/api/job/v1/search
 Reponse: { jobs: [...], recruiters: [...], warnings: [...] }
-Zone   : Paris + 30 km
-Filtre : offres des 14 derniers jours
+Zone   : Paris + 50 km (toute l'Ile-de-France)
+Filtre : toutes les offres actives (expiration geree par l'API)
 Output : lba_mode_YYYY-MM-DD.xlsx  +  lba_mode_YYYY-MM-DD.csv
 
 Secret requis (GitHub Secrets) :
@@ -18,7 +18,7 @@ import hashlib
 import json
 import os
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
@@ -26,15 +26,16 @@ import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 LBA_API_TOKEN = os.getenv("LBA_API_TOKEN", "")
 LBA_JOBS_URL  = "https://api.apprentissage.beta.gouv.fr/api/job/v1/search"
 
-# 12 codes ROME mode (B1806 exclu - tapisserie != mode)
+# Codes ROME mode : fabrication + commerce + design + gestion boutique
 ROMES_MODE = [
+    # -- Codes initiaux (fabrication mode) --
     "B1801",  # Chapellerie / Modiste
     "B1803",  # Vetements sur mesure / petite serie
     "B1805",  # Stylisme
@@ -46,21 +47,25 @@ ROMES_MODE = [
     "H2402",  # Assemblage-montage vetements / textiles
     "H2411",  # Montage prototype cuir / matieres souples
     "H2412",  # Patronnage-graduation
+    # -- Commerce / retail mode (offres actives sur LBA) --
     "D1214",  # Vente habillement et accessoires
+    "D1207",  # Animation des ventes / visual merchandising
+    "D1212",  # Responsable de magasin de detail
+    "D1401",  # Assistanat commercial (showrooms, agents mode)
+    # -- Design / creation --
+    "M1607",  # Stylisme / design de mode
 ]
 
 PARIS_LAT = 48.8534
 PARIS_LON = 2.3488
-RADIUS_KM = 30
-DAYS_BACK = 14
+RADIUS_KM = 50   # Toute l'Ile-de-France (etait 30)
 
 OUTPUT_DIR = Path(__file__).parent
 TODAY      = date.today().isoformat()
-CUTOFF     = datetime.now(tz=timezone.utc) - timedelta(days=DAYS_BACK)
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # FORMAT EXCEL
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 # (label, largeur_col, cle_dict)
 COLUMNS = [
@@ -94,18 +99,19 @@ HEADER_FILL = PatternFill("solid", fgColor="1A1A2E")
 HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
 
 SOURCE_COLORS = {
-    "LBA - Direct":    "E8F5E9",   # vert clair
-    "France Travail":  "E3F2FD",   # bleu clair
-    "LBA - Spontanee": "FFF9E6",   # jaune clair
+    "LBA - Direct":            "E8F5E9",   # vert clair
+    "France Travail":          "E3F2FD",   # bleu clair
+    "Partenaire - Meteojob":   "FFF2CC",   # jaune (vraie offre partenaire)
+    "LBA - Spontanee":         "FFFFFF",   # blanc
 }
 
 WRAP_COLS = {12, 13, 14, 15}
 LINK_COLS = {18: "site_entreprise", 19: "lien_candidature"}
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # API
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _headers() -> dict:
     h = {"Accept": "application/json"}
@@ -151,9 +157,9 @@ def fetch_jobs(rome: str, debug: bool = False) -> dict:
         return {}
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # PARSING
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_date(raw) -> datetime | None:
     if not raw:
@@ -171,13 +177,6 @@ def _parse_date(raw) -> datetime | None:
     return None
 
 
-def is_recent(date_raw) -> bool:
-    if not date_raw:
-        return True
-    dt = _parse_date(date_raw)
-    return dt >= CUTOFF if dt else True
-
-
 def _s(val) -> str:
     if val is None:
         return ""
@@ -190,11 +189,9 @@ def _extract_city(address_str: str) -> str:
     """Extrait la ville depuis une adresse string LBA."""
     if not address_str:
         return ""
-    # Format "75001 Paris" ou "Paris 75001"
     m = re.search(r'\b\d{5}\s+([A-Za-z\xc0-\xff\s\-]+)', address_str)
     if m:
         return m.group(1).strip().title()
-    # Derniere partie apres virgule contenant des lettres
     parts = [p.strip() for p in address_str.split(',')]
     for p in reversed(parts):
         if re.search(r'[A-Za-z\xc0-\xff]', p) and not re.match(r'^\d{5}$', p.strip()):
@@ -238,8 +235,6 @@ def parse_job(raw: dict) -> dict | None:
 
     # Date de publication
     date_creation = publication.get("creation")
-    if not is_recent(date_creation):
-        return None
     date_pub = _s(date_creation)[:10] if date_creation else ""
 
     # Titre (obligatoire)
@@ -380,9 +375,9 @@ def parse_recruiter(raw: dict) -> dict | None:
     }
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # SCRAPE
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def scrape_lba(debug: bool = False) -> list[dict]:
     """
@@ -393,7 +388,7 @@ def scrape_lba(debug: bool = False) -> list[dict]:
     total_raw = 0
     first_call = True
 
-    print(f"\nLBA Scraper - {len(ROMES_MODE)} codes ROME - Paris +{RADIUS_KM}km - {DAYS_BACK} derniers jours")
+    print(f"\nLBA Scraper - {len(ROMES_MODE)} codes ROME - Paris +{RADIUS_KM}km - toutes offres actives")
     print(f"   Token : {'PRESENT' if LBA_API_TOKEN else 'ABSENT'}")
     print(f"   URL   : {LBA_JOBS_URL}")
 
@@ -408,7 +403,6 @@ def scrape_lba(debug: bool = False) -> list[dict]:
             print("vide ou erreur")
             continue
 
-        # Vraies cles de reponse confirmees par swagger.json
         jobs       = data.get("jobs",       []) or []
         recruiters = data.get("recruiters", []) or []
 
@@ -438,9 +432,9 @@ def scrape_lba(debug: bool = False) -> list[dict]:
     return all_offers
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # DEDUPLICATION
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def deduplicate(offers: list[dict]) -> list[dict]:
     seen: set[str] = set()
@@ -456,9 +450,9 @@ def deduplicate(offers: list[dict]) -> list[dict]:
     return unique
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # EXPORT EXCEL
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_excel(offers: list[dict], filepath: Path) -> None:
     wb = openpyxl.Workbook()
@@ -500,9 +494,9 @@ def export_excel(offers: list[dict], filepath: Path) -> None:
     print(f"Excel : {filepath.name}  ({filepath.stat().st_size // 1024} ko)")
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # EXPORT CSV
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def export_csv(offers: list[dict], filepath: Path) -> None:
     if not offers:
@@ -519,9 +513,9 @@ def export_csv(offers: list[dict], filepath: Path) -> None:
     print(f"CSV : {filepath.name}  ({filepath.stat().st_size // 1024} ko)")
 
 
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
-# âââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââââ
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     debug = os.getenv("LBA_DEBUG", "").lower() in ("1", "true", "yes")
@@ -545,18 +539,20 @@ def main() -> None:
         print("  -> Relancer avec LBA_DEBUG=true pour voir la structure de reponse")
         return
 
-    job_count   = sum(1 for o in offers if o.get("source") in ("LBA - Direct", "France Travail"))
-    lba_count   = sum(1 for o in offers if o.get("source") == "LBA - Direct")
-    ft_count    = sum(1 for o in offers if o.get("source") == "France Travail")
-    spont_count = sum(1 for o in offers if o.get("source") == "LBA - Spontanee")
-    with_phone  = sum(1 for o in offers if o.get("contact_tel"))
-    with_desc   = sum(1 for o in offers if o.get("description") and len(o["description"]) > 20)
+    lba_count     = sum(1 for o in offers if o.get("source") == "LBA - Direct")
+    ft_count      = sum(1 for o in offers if o.get("source") == "France Travail")
+    partner_count = sum(1 for o in offers if (o.get("source") or "").startswith("Partenaire"))
+    spont_count   = sum(1 for o in offers if o.get("source") == "LBA - Spontanee")
+    job_count     = lba_count + ft_count + partner_count
+    with_phone    = sum(1 for o in offers if o.get("contact_tel"))
+    with_desc     = sum(1 for o in offers if o.get("description") and len(o["description"]) > 20)
 
     print(f"\nResultats - {TODAY}")
     print(f"   Total             : {len(offers)}")
     print(f"   Vraies offres     : {job_count}")
     print(f"     LBA Direct      : {lba_count}")
     print(f"     France Travail  : {ft_count}")
+    print(f"     Partenaires     : {partner_count}")
     print(f"   Spontanees        : {spont_count}")
     print(f"   Avec telephone    : {with_phone}")
     print(f"   Avec description  : {with_desc}")
@@ -567,7 +563,7 @@ def main() -> None:
     export_excel(offers, xlsx_path)
     export_csv(offers,   csv_path)
 
-    print(f"\nDone - {len(offers)} offres - Paris +{RADIUS_KM}km - {DAYS_BACK}j - {len(ROMES_MODE)} codes ROME")
+    print(f"\nDone - {len(offers)} offres - Paris +{RADIUS_KM}km - {len(ROMES_MODE)} codes ROME")
 
 
 if __name__ == "__main__":
